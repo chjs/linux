@@ -677,6 +677,10 @@ struct inode {
 #endif
 
 	void			*i_private; /* fs or device private pointer */
+#ifdef NVMMAP
+	spinlock_t		i_sync_lock;
+	struct list_head 	i_vma_list;
+#endif	/* NVMMAP */
 };
 
 static inline int inode_unhashed(struct inode *inode)

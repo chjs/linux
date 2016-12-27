@@ -332,6 +332,8 @@
 323	common	userfaultfd		sys_userfaultfd
 324	common	membarrier		sys_membarrier
 325	common	mlock2			sys_mlock2
+326	common	mmap_lock		sys_mmap_lock
+327	common	mmap_unlock		sys_mmap_unlock
 
 #
 # x32-specific system call numbers start at 512 to avoid cache impact

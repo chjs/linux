@@ -201,6 +201,10 @@ cond_syscall(sys_mremap);
 cond_syscall(sys_remap_file_pages);
 cond_syscall(compat_sys_move_pages);
 cond_syscall(compat_sys_migrate_pages);
+#ifdef NVMMAP
+cond_syscall(sys_mmap_lock);
+cond_syscall(sys_mmap_unlock);
+#endif	/* NVMMAP */
 
 /* block-layer dependent */
 cond_syscall(sys_bdflush);

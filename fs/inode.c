@@ -119,7 +119,7 @@ static int no_open(struct inode *inode, struct file *file)
 }
 
 /**
- * inode_init_always - perform inode structure intialisation
+ * inode_init_always - perform inode structure initialisation
  * @sb: superblock inode belongs to
  * @inode: inode to initialise
  *
@@ -157,6 +157,9 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	if (security_inode_alloc(inode))
 		goto out;
 	spin_lock_init(&inode->i_lock);
+#ifdef NVMMAP
+	spin_lock_init(&inode->i_sync_lock);
+#endif	/* NVMMAP */
 	lockdep_set_class(&inode->i_lock, &sb->s_type->i_lock_key);
 
 	mutex_init(&inode->i_mutex);
@@ -359,6 +362,9 @@ void inode_init_once(struct inode *inode)
 	INIT_LIST_HEAD(&inode->i_devices);
 	INIT_LIST_HEAD(&inode->i_io_list);
 	INIT_LIST_HEAD(&inode->i_lru);
+#ifdef NVMMAP
+	INIT_LIST_HEAD(&inode->i_vma_list);
+#endif	/* NVMMAP */
 	address_space_init_once(&inode->i_data);
 	i_size_ordered_init(inode);
 #ifdef CONFIG_FSNOTIFY

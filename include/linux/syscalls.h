@@ -889,4 +889,8 @@ asmlinkage long sys_membarrier(int cmd, int flags);
 
 asmlinkage long sys_mlock2(unsigned long start, size_t len, int flags);
 
+#ifdef NVMMAP
+asmlinkage long sys_mmap_lock(unsigned long addr);
+asmlinkage long sys_mmap_unlock(unsigned long addr);
+#endif	/* NVMMAP */
 #endif

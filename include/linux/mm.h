@@ -108,6 +108,11 @@ extern struct rw_semaphore nommu_region_sem;
 extern unsigned int kobjsize(const void *objp);
 #endif
 
+#ifdef NVMMAP
+#define VM_MMAP_NONE		0x00000000
+#define VM_MMAP_LOCK		0x00000001
+#define VM_MMAP_ATOMIC		0x00080000
+#endif	/* NVMMAP */
 /*
  * vm_flags in vm_area_struct, see mm_types.h.
  */
@@ -1912,6 +1917,11 @@ extern unsigned long get_unmapped_area(struct file *, unsigned long, unsigned lo
 
 extern unsigned long mmap_region(struct file *file, unsigned long addr,
 	unsigned long len, vm_flags_t vm_flags, unsigned long pgoff);
+#ifdef NVMMAP
+extern unsigned long nvmmap_region(struct file *file, unsigned long addr,
+	unsigned long len, vm_flags_t vm_flags, unsigned long pgoff,
+	vm_flags_t vm_mmap_flags);
+#endif	/* NVMMAP */
 extern unsigned long do_mmap(struct file *file, unsigned long addr,
 	unsigned long len, unsigned long prot, unsigned long flags,
 	vm_flags_t vm_flags, unsigned long pgoff, unsigned long *populate);
@@ -2311,5 +2321,9 @@ void __init setup_nr_node_ids(void);
 static inline void setup_nr_node_ids(void) {}
 #endif
 
+#ifdef NVMMAP
+extern int __mmap_lock(unsigned long addr);
+extern int __mmap_unlock(unsigned long addr);
+#endif /* NVMMAP */
 #endif /* __KERNEL__ */
 #endif /* _LINUX_MM_H */

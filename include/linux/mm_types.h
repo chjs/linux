@@ -355,6 +355,13 @@ struct vm_area_struct {
 	struct mempolicy *vm_policy;	/* NUMA policy for the VMA */
 #endif
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
+#ifdef NVMMAP
+	/* If a file is mapped, this vma is added to the list of the inode */
+	struct list_head vm_inode_chain;
+	unsigned long vm_mmap_flags;		/* Flags, see mm.h. */
+	unsigned long vm_orig_flags;		/* Flags, see mm.h. */
+	pgprot_t vm_orig_page_prot;		/* Access permissions of this VMA. */
+#endif	/* NVMMAP */
 };
 
 struct core_thread {
