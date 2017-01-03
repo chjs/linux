@@ -15,7 +15,8 @@
 
 #ifdef NVMMAP
 /* flags for NVmmap [19:23] */
-#define MAP_ATOMIC	0x00080000
+#define MAP_DEBUG	0x00080000
+#define MAP_ATOMIC	0x00100000
 #endif	/* NVMMAP */
 /* Bits [26:31] are reserved, see mman-common.h for MAP_HUGETLB usage */
 

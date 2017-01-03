@@ -1231,14 +1231,15 @@ good_area:
 	if (vma->vm_file) {
 		if (vma->vm_mmap_flags & VM_MMAP_ATOMIC) {
 			inode = vma->vm_file->f_inode;
-			printk(KERN_ERR "[__do_page_fault] spin lock ino=%lu\n", inode->i_ino);
+			nvmmap_log("[__do_page_fault] spin lock ino=%lu\n",
+					inode->i_ino);
 			spin_lock(&inode->i_sync_lock);
 		}
 	}
-#endif	/* NVMMAP */
+#endif /* NVMMAP */
 	if (unlikely(access_error(error_code, vma))) {
 #ifdef NVMMAP
-		printk(KERN_ERR "[__do_page_fault] bad area!! error_code=%lu\n", 
+		nvmmap_log("[__do_page_fault] bad area!! error_code=%lu\n",
 				error_code);
 		if (vma->vm_mmap_flags & VM_MMAP_LOCK) {
 			vma->vm_mmap_flags &= ~VM_MMAP_LOCK;
@@ -1246,7 +1247,7 @@ good_area:
 			vma->vm_page_prot = vma->vm_orig_page_prot;
 			goto locking;
 		}
-#endif	/* NVMMAP */
+#endif /* NVMMAP */
 		bad_area_access_error(regs, error_code, address);
 		return;
 	}
@@ -1263,9 +1264,10 @@ locking:
 #ifdef NVMMAP
 	if (inode && vma->vm_mmap_flags & VM_MMAP_ATOMIC) {
 		spin_unlock(&inode->i_sync_lock);
-		printk(KERN_ERR "[__do_page_fault] spin unlock ino=%lu\n", inode->i_ino);
+		nvmmap_log("[__do_page_fault] spin unlock ino=%lu\n",
+				inode->i_ino);
 	}
-#endif	/* NVMMAP */
+#endif /* NVMMAP */
 
 	/*
 	 * If we need to retry the mmap_sem has already been released,

@@ -41,7 +41,7 @@ static int vma_lock(struct vm_area_struct *vma)
 	prev = vma->vm_prev;
 	end = vma->vm_end;
 
-	printk(KERN_ERR "[vma_lock] inode_vma : addr=%lx\n", vma->vm_start);
+	nvmmap_log("[vma_lock] inode_vma : addr=%lx\n", vma->vm_start);
 
 	down_write(&vma->vm_mm->mmap_sem);
 
@@ -99,7 +99,7 @@ int __mmap_lock(unsigned long addr)
 
 	int error = -EINVAL;
 
-	printk(KERN_ERR "[__mmap_lock] addr=%lx\n", addr);
+	nvmmap_log("[__mmap_lock] addr=%lx\n", addr);
 
 	if (addr & ~PAGE_MASK)
 		return error;
@@ -109,14 +109,14 @@ int __mmap_lock(unsigned long addr)
 	vma = find_vma(current->mm, addr);
 	error = -ENOMEM;
 	if (!vma) {
-		printk(KERN_ERR "[__mmap_lock] I can not find the VMA\n");
+		nvmmap_log("[__mmap_lock] I can not find the VMA\n");
 		goto out;
 	}
 	up_read(&current->mm->mmap_sem);
 
 	inode = vma->vm_file->f_inode;
 	spin_lock(&inode->i_sync_lock);
-	printk(KERN_ERR "[__mmap_lock] spin lock ino=%lu\n", inode->i_ino);
+	nvmmap_log("[__mmap_lock] spin lock ino=%lu\n", inode->i_ino);
 
 	list_for_each_safe(entry, tmp, &inode->i_vma_list)
 	{
@@ -136,7 +136,7 @@ int __mmap_unlock(unsigned long addr)
 
 	int error = -EINVAL;
 
-	printk(KERN_ERR "[__mmap_unlock] addr=%lx\n", addr);
+	nvmmap_log("[__mmap_unlock] addr=%lx\n", addr);
 
 	if (addr & ~PAGE_MASK)
 		return error;
@@ -146,7 +146,7 @@ int __mmap_unlock(unsigned long addr)
 	vma = find_vma(current->mm, addr);
 	error = -ENOMEM;
 	if (!vma) {
-		printk(KERN_ERR "[__mmap_unlock] I can not find the VMA\n");
+		nvmmap_log("[__mmap_unlock] I can not find the VMA\n");
 		return error;
 	}
 	up_read(&current->mm->mmap_sem);

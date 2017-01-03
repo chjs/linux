@@ -1544,6 +1544,37 @@ out:
 	return retval;
 }
 
+#ifdef NVMMAP
+static int insert_pfn_mkwrite(struct vm_area_struct *vma, unsigned long addr,
+			unsigned long pfn, pgprot_t prot)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	int retval;
+	pte_t *pte, entry;
+	spinlock_t *ptl;
+
+	retval = -ENOMEM;
+	pte = get_locked_pte(mm, addr, &ptl);
+	if (!pte)
+		goto out;
+	retval = -EBUSY;
+	if (!pte_none(*pte))
+		goto out_unlock;
+
+	/* Ok, finally just insert the thing.. */
+	entry = pte_mkspecial(pfn_pte(pfn, prot));
+	entry = maybe_mkwrite(pte_mkdirty(entry), vma); /* mkwrite */
+	set_pte_at(mm, addr, pte, entry);
+	update_mmu_cache(vma, addr, pte); /* XXX: why not for insert_page? */
+
+	retval = 0;
+out_unlock:
+	pte_unmap_unlock(pte, ptl);
+out:
+	return retval;
+}
+#endif /* NVMMAP */
+
 /**
  * vm_insert_pfn - insert single pfn into user vma
  * @vma: user vma to map to
@@ -1613,6 +1644,33 @@ int vm_insert_mixed(struct vm_area_struct *vma, unsigned long addr,
 	return insert_pfn(vma, addr, pfn, vma->vm_page_prot);
 }
 EXPORT_SYMBOL(vm_insert_mixed);
+
+#ifdef NVMMAP
+int vm_insert_mixed_mkwrite(struct vm_area_struct *vma, unsigned long addr,
+			unsigned long pfn)
+{
+	BUG_ON(!(vma->vm_flags & VM_MIXEDMAP));
+
+	if (addr < vma->vm_start || addr >= vma->vm_end)
+		return -EFAULT;
+
+	/*
+	 * If we don't have pte special, then we have to use the pfn_valid()
+	 * based VM_MIXEDMAP scheme (see vm_normal_page), and thus we *must*
+	 * refcount the page if pfn_valid is true (hence insert_page rather
+	 * than insert_pfn).  If a zero_pfn were inserted into a VM_MIXEDMAP
+	 * without pte special, it would there be refcounted as a normal page.
+	 */
+	if (!HAVE_PTE_SPECIAL && pfn_valid(pfn)) {
+		struct page *page;
+
+		page = pfn_to_page(pfn);
+		return insert_page(vma, addr, page, vma->vm_page_prot);
+	}
+	return insert_pfn_mkwrite(vma, addr, pfn, vma->vm_page_prot);
+}
+EXPORT_SYMBOL(vm_insert_mixed_mkwrite);
+#endif /* NVMMAP */
 
 /*
  * maps a range of physical memory into the requested pages. the old
@@ -2769,6 +2827,8 @@ static int __do_fault(struct vm_area_struct *vma, unsigned long address,
 	vmf.page = NULL;
 	vmf.cow_page = cow_page;
 
+	nvmmap_log_debug("[__do_fault] vmf.addr=%p, vmf.pgoff=%lu\n",
+			vmf.virtual_address, vmf.pgoff);
 	ret = vma->vm_ops->fault(vma, &vmf);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
 		return ret;
@@ -2791,6 +2851,32 @@ static int __do_fault(struct vm_area_struct *vma, unsigned long address,
 	*page = vmf.page;
 	return ret;
 }
+
+#ifdef NVMMAP
+static int do_nvmmap_wp_page(struct mm_struct *mm, struct vm_area_struct *vma,
+		unsigned long address, pte_t *page_table, pmd_t *pmd,
+		spinlock_t *ptl, pte_t orig_pte,
+		unsigned long flags)
+	__releases(ptl)
+{
+	struct page *fault_page, *new_page;
+	int ret;
+	//spinlock_t *ptl = NULL;
+
+	nvmmap_log("[do_nvmmap_wp_page] start\n");
+	ptep_clear_flush_notify(vma, address, page_table);
+	pte_unmap_unlock(page_table, ptl);
+
+	new_page = NULL;
+	pgoff_t pgoff = (((address & PAGE_MASK)
+				- vma->vm_start) >> PAGE_SHIFT) + vma->vm_pgoff;
+	flags |= FAULT_FLAG_COW | FAULT_FLAG_PRESENT;
+
+	ret = __do_fault(vma, address, pgoff, flags, new_page, &fault_page);
+
+	return ret;
+}
+#endif  /* NVMMAP */
 
 /**
  * do_set_pte - setup new PTE entry for given page and add reverse page mapping.
@@ -2944,10 +3030,7 @@ static int do_read_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	spinlock_t *ptl;
 	pte_t *pte;
 	int ret = 0;
-#ifdef NVMMAP
-	if (vma->vm_mmap_flags & VM_MMAP_ATOMIC)
-		printk(KERN_ERR "[do_read_fault] addr=%lx\n", address);
-#endif	/* NVMMAP */
+	nvmmap_log_debug("[do_read_fault] addr=%lx\n", address);
 
 	/*
 	 * Let's call ->map_pages() first and use ->fault() as fallback
@@ -2989,10 +3072,7 @@ static int do_cow_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	spinlock_t *ptl;
 	pte_t *pte;
 	int ret;
-#ifdef NVMMAP
-	if (vma->vm_mmap_flags & VM_MMAP_ATOMIC)
-		printk(KERN_ERR "[do_cow_fault] addr=%lx\n", address);
-#endif	/* NVMMAP */
+	nvmmap_log_debug("[do_cow_fault] addr=%lx\n", address);
 
 	if (unlikely(anon_vma_prepare(vma)))
 		return VM_FAULT_OOM;
@@ -3060,10 +3140,7 @@ static int do_shared_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	pte_t *pte;
 	int dirtied = 0;
 	int ret, tmp;
-#ifdef NVMMAP
-	if (vma->vm_mmap_flags & VM_MMAP_ATOMIC)
-		printk(KERN_ERR "[do_shared_fault] addr=%lx\n", address);
-#endif	/* NVMMAP */
+	nvmmap_log_debug("[do_shared_fault] addr=%lx\n", address);
 
 	ret = __do_fault(vma, address, pgoff, flags, NULL, &fault_page);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
@@ -3133,11 +3210,8 @@ static int do_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	pte_unmap(page_table);
 	/* The VMA was not fully populated on mmap() or missing VM_DONTEXPAND */
 	if (!vma->vm_ops->fault) {
-#ifdef NVMMAP
-		if (vma->vm_mmap_flags & VM_MMAP_ATOMIC)
-			printk(KERN_ERR "[do_fault] addr=%lx, VM_FAULT_SIGBUS\n",
-					address);
-#endif	/* NVMMAP */
+		nvmmap_log_debug("[do_fault] addr=%lx, VM_FAULT_SIGBUS\n",
+				address);
 		return VM_FAULT_SIGBUS;
 	}
 	if (!(flags & FAULT_FLAG_WRITE))
@@ -3306,10 +3380,9 @@ static int handle_pte_fault(struct mm_struct *mm,
 	entry = *pte;
 	barrier();
 	if (!pte_present(entry)) {
-#ifdef NVMMAP
-		if (vma->vm_mmap_flags & VM_MMAP_ATOMIC)
-			printk(KERN_ERR "[handle_pte_fault] step 1, addr=%lx\n", address);
-#endif	/* NVMMAP */
+		nvmmap_log_debug(
+			"[handle_pte_fault] addr=%lx, pte is NOT present\n",
+			address);
 		if (pte_none(entry)) {
 			if (vma_is_anonymous(vma))
 				return do_anonymous_page(mm, vma, address,
@@ -3321,26 +3394,31 @@ static int handle_pte_fault(struct mm_struct *mm,
 		return do_swap_page(mm, vma, address,
 					pte, pmd, flags, entry);
 	}
-#ifdef NVMMAP
-	if (vma->vm_mmap_flags & VM_MMAP_ATOMIC)
-		printk(KERN_ERR "[handle_pte_fault] step 2, addr=%lx\n", address);
-#endif	/* NVMMAP */
+	nvmmap_log_debug("[handle_pte_fault] addr=%lx, pte is present\n",
+			address);
 
-	if (pte_protnone(entry))
+	if (pte_protnone(entry)) {
+		nvmmap_log_debug("[handle_pte_fault] pte_protnone\n");
 		return do_numa_page(mm, vma, address, entry, pte, pmd);
+	}
 
-#ifdef NVMMAP
-	if (vma->vm_mmap_flags & VM_MMAP_ATOMIC)
-		printk(KERN_ERR "[handle_pte_fault] step 3, addr=%lx\n", address);
-#endif	/* NVMMAP */
 	ptl = pte_lockptr(mm, pmd);
 	spin_lock(ptl);
 	if (unlikely(!pte_same(*pte, entry)))
 		goto unlock;
 	if (flags & FAULT_FLAG_WRITE) {
-		if (!pte_write(entry))
-			return do_wp_page(mm, vma, address,
+		if (!pte_write(entry)) {
+			nvmmap_log_debug(
+				"[handle_pte_fault] CoW is required\n");
+#ifdef NVMMAP
+			if (vma->vm_mmap_flags & VM_MMAP_ATOMIC)
+				return do_nvmmap_wp_page(mm, vma, address,
+						pte, pmd, ptl, entry, flags);
+			else
+#endif /* NVMMAP */
+				return do_wp_page(mm, vma, address,
 					pte, pmd, ptl, entry);
+		}
 		entry = pte_mkdirty(entry);
 	}
 	entry = pte_mkyoung(entry);
@@ -3375,10 +3453,7 @@ static int __handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	pmd_t *pmd;
 	pte_t *pte;
 
-#ifdef NVMMAP
-	if (vma->vm_mmap_flags & VM_MMAP_ATOMIC)
-		printk(KERN_ERR "[__handle_mm_fault] addr=%lx\n", address);
-#endif	/* NVMMAP */
+	nvmmap_log_debug("[__handle_mm_fault] addr=%lx\n", address);
 	if (unlikely(is_vm_hugetlb_page(vma)))
 		return hugetlb_fault(mm, vma, address, flags);
 
@@ -3444,6 +3519,7 @@ static int __handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	 * safe to run pte_offset_map().
 	 */
 	pte = pte_offset_map(pmd, address);
+	nvmmap_log_debug("[__handle_mm_fault] pte=%lx\n", pte);
 
 	return handle_pte_fault(mm, vma, address, pte, pmd, flags);
 }

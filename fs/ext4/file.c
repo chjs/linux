@@ -212,6 +212,7 @@ static int ext4_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	struct super_block *sb = file_inode(vma->vm_file)->i_sb;
 	bool write = vmf->flags & FAULT_FLAG_WRITE;
 
+	nvmmap_log_debug("[ext4_dax_fault] vmf.addr=%p\n", vmf->virtual_address);
 	if (write) {
 		sb_start_pagefault(sb);
 		file_update_time(vma->vm_file);
@@ -221,6 +222,11 @@ static int ext4_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 
 	if (IS_ERR(handle))
 		result = VM_FAULT_SIGBUS;
+#ifdef NVMMAP
+	else if (vmf->flags & FAULT_FLAG_COW)
+		result = __dax_fault_cow(vma, vmf, ext4_get_block_dax,
+				ext4_new_cow_block, ext4_end_io_unwritten);
+#endif /* NVMMAP */
 	else
 		result = __dax_fault(vma, vmf, ext4_get_block_dax,
 						ext4_end_io_unwritten);

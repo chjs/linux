@@ -28,6 +28,10 @@
 #include <linux/sched.h>
 #include <linux/uio.h>
 #include <linux/vmstat.h>
+#ifdef NVMMAP
+#include <asm/tlb.h>
+static struct kmem_cache *cow_pair_cachep;
+#endif /* NVMMAP */
 
 /*
  * dax_clear_blocks() is called from within transaction context from XFS,
@@ -328,7 +332,12 @@ static int dax_insert_mapping(struct inode *inode, struct buffer_head *bh,
 		wmb_pmem();
 	}
 
-	error = vm_insert_mixed(vma, vaddr, pfn);
+#ifdef NVMMAP
+	if (vmf->flags & FAULT_FLAG_COW)
+		error = vm_insert_mixed_mkwrite(vma, vaddr, pfn);
+	else
+#endif /* NVMMAP */
+		error = vm_insert_mixed(vma, vaddr, pfn);
 
  out:
 	i_mmap_unlock_read(mapping);
@@ -488,6 +497,170 @@ int __dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 	goto out;
 }
 EXPORT_SYMBOL(__dax_fault);
+
+#ifdef NVMMAP
+#define CACHELINE_SIZE  (64)
+#define _mm_clflush(addr)\
+	asm volatile("clflush %0" : "+m" (*(volatile char *)(addr)))
+
+static inline void PERSISTENT_BARRIER(void)
+{
+	asm volatile ("sfence\n" : : );
+}
+
+static inline void nvmmap_flush_buffer(void *buf, uint32_t len, bool fence)
+{
+	uint32_t i;
+	len = len + ((unsigned long)(buf) & (CACHELINE_SIZE - 1));
+	for (i = 0; i < len; i += CACHELINE_SIZE)
+		_mm_clflush(buf + i);
+	/* Do a fence only if asked. We often don't need to do a fence
+	 * immediately after clflush because even if we get context switched
+	 * between clflush and subsequent fence, the context switch operation
+	 * provides implicit fence. */
+	if (fence)
+		PERSISTENT_BARRIER();
+}
+
+static int copy_bhs(struct buffer_head *new_bh, struct buffer_head *bh,
+		unsigned blkbits, unsigned long vaddr)
+{
+	void __pmem *vto, *vfrom;
+	dax_get_addr(new_bh, &vto, blkbits);
+	dax_get_addr(bh, &vfrom, blkbits);
+	__copy_from_user_inatomic_nocache(vto, vfrom, 4096);
+	nvmmap_flush_buffer(vto, 4096, 0);
+	return 0;
+}
+
+void cow_pair_cache_init(void)
+{
+	if (!cow_pair_cachep) {
+		cow_pair_cachep = kmem_cache_create("cow_pair_cachep",
+				sizeof(struct cow_pair),
+				0, SLAB_PANIC, NULL);
+		nvmmap_log("[cow_pair_cache_init] init cow_pair_cachep\n");
+	}
+}
+
+static void insert_journal(struct vm_area_struct *vma, unsigned blkbits,
+		struct buffer_head new_bh, struct buffer_head bh,
+		unsigned long vaddr)
+{
+	struct cow_pair *pair;
+	pair = kmem_cache_alloc(cow_pair_cachep, GFP_KERNEL);
+	if (pair) {
+		pair->cow_addr = vaddr;
+		pair->cow_original_block = bh.b_blocknr << (blkbits - 9);
+		pair->cow_new_block = new_bh.b_blocknr << (blkbits - 9);
+		INIT_LIST_HEAD(&pair->cow_list);
+	}
+	else {
+		nvmmap_log("[insert_journal] cow_pairs is NULL\n");
+	}
+
+	list_add(&pair->cow_list, &vma->vm_cow_pairs);
+	nvmmap_log("[insert_journal] list_add()\n");
+}
+
+int __dax_fault_cow(struct vm_area_struct *vma, struct vm_fault *vmf,
+			get_block_t get_block, get_cow_block_t get_cow_block,
+			dax_iodone_t complete_unwritten)
+{
+	struct file *file = vma->vm_file;
+	struct address_space *mapping = file->f_mapping;
+	struct inode *inode = mapping->host;
+	struct page *page;
+	struct buffer_head bh, new_bh;
+	unsigned long vaddr = (unsigned long)vmf->virtual_address;
+	unsigned blkbits = inode->i_blkbits;
+	sector_t block;
+	pgoff_t size;
+	int error;
+	int major = 0;
+
+	cow_pair_cache_init();
+	size = (i_size_read(inode) + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	if (vmf->pgoff >= size)
+		return VM_FAULT_SIGBUS;
+
+	memset(&bh, 0, sizeof(bh));
+	block = (sector_t)vmf->pgoff << (PAGE_SHIFT - blkbits);
+	nvmmap_log("[__dax_fault_cow] logical block=%lu\n", block);
+	bh.b_size = PAGE_SIZE;
+
+ repeat:
+	page = find_get_page(mapping, vmf->pgoff);
+	if (page) {
+		if (!lock_page_or_retry(page, vma->vm_mm, vmf->flags)) {
+			page_cache_release(page);
+			return VM_FAULT_RETRY;
+		}
+		if (unlikely(page->mapping != mapping)) {
+			unlock_page(page);
+			page_cache_release(page);
+			goto repeat;
+		}
+		size = (i_size_read(inode) + PAGE_SIZE - 1) >> PAGE_SHIFT;
+		if (unlikely(vmf->pgoff >= size)) {
+			/*
+			 * We have a struct page covering a hole in the file
+			 * from a read fault and we've raced with a truncate
+			 */
+			error = -EIO;
+			goto unlock_page;
+		}
+	}
+
+	error = get_block(inode, block, &bh, 0);
+	nvmmap_log("[__dax_fault_cow] original get_block=%lu\n", bh.b_blocknr);
+	if (!error && (bh.b_size < PAGE_SIZE))
+		error = -EIO;		/* fs corruption? */
+	if (error)
+		goto unlock_page;
+
+	if (!buffer_mapped(&bh) && !buffer_unwritten(&bh) && !vmf->cow_page) {
+		if (vmf->flags & FAULT_FLAG_WRITE) {
+			error = get_block(inode, block, &bh, 1);
+			count_vm_event(PGMAJFAULT);
+			mem_cgroup_count_vm_event(vma->vm_mm, PGMAJFAULT);
+			major = VM_FAULT_MAJOR;
+			if (!error && (bh.b_size < PAGE_SIZE))
+				error = -EIO;
+			if (error)
+				goto unlock_page;
+		} else {
+			return dax_load_hole(mapping, page, vmf);
+		}
+	}
+	/* allocate a new block for CoW */
+	get_cow_block(inode, &new_bh, &error);
+	nvmmap_log("[__dax_fault_cow] get_cow_block=%lu for CoW\n", new_bh.b_blocknr);
+
+	error = copy_bhs(&new_bh, &bh, blkbits, vaddr);
+
+	if (error) {
+		nvmmap_log("[__dax_fault_cow] Error: copy_bhs\n");
+		goto unlock_page;
+	}
+
+	error = dax_insert_mapping(inode, &new_bh, vma, vmf);
+	insert_journal(vma, blkbits, new_bh, bh, vaddr);
+
+	flush_tlb_page(vma, vaddr);
+
+out:
+	return VM_FAULT_LOCKED;
+
+unlock_page:
+	if (page) {
+		unlock_page(page);
+		page_cache_release(page);
+	}
+	goto out;
+}
+EXPORT_SYMBOL(__dax_fault_cow);
+#endif /* NVMMAP */
 
 /**
  * dax_fault - handle a page fault on a DAX file

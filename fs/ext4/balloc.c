@@ -652,6 +652,24 @@ ext4_fsblk_t ext4_new_meta_blocks(handle_t *handle, struct inode *inode,
 	return ret;
 }
 
+#ifdef NVMMAP
+void ext4_new_cow_block(struct inode *inode,
+		struct buffer_head *bh, int *errp)
+{
+	struct ext4_allocation_request ar;
+	handle_t *handle = ext4_journal_current_handle();
+	ext4_fsblk_t block;
+
+	memset(&ar, 0, sizeof(ar));
+	ar.inode = inode;
+	ar.len = 1;
+
+	block = ext4_mb_new_blocks(handle, &ar, errp);
+	nvmmap_log("[ext4_new_cow_block] block=%lu\n", block);
+	map_bh(bh, inode->i_sb, block);
+}
+#endif /* NVMMAP */
+
 /**
  * ext4_count_free_clusters() -- count filesystem free clusters
  * @sb:		superblock

@@ -1266,8 +1266,8 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 			unsigned long pgoff, unsigned long *populate)
 {
 #ifdef NVMMAP
-	vm_flags_t vm_mmap_flags;
-#endif	/* NVMMAP */
+	vm_flags_t vm_mmap_flags = VM_MMAP_NONE;
+#endif /* NVMMAP */
 	struct mm_struct *mm = current->mm;
 
 	*populate = 0;
@@ -1285,6 +1285,12 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		if (!(file && path_noexec(&file->f_path)))
 			prot |= PROT_EXEC;
 
+#ifdef NVMMAP
+	if (flags & MAP_DEBUG) {
+		vm_mmap_flags |= VM_MMAP_DEBUG;
+		nvmmap_log("[do_mmap] debug mode %lx\n", vm_mmap_flags);
+	}
+#endif /* NVMMAP */
 	if (!(flags & MAP_FIXED))
 		addr = round_hint_to_min(addr);
 
@@ -1324,6 +1330,17 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 
 	if (file) {
 		struct inode *inode = file_inode(file);
+#ifdef NVMMAP
+		if (flags & MAP_ATOMIC) {
+			vm_mmap_flags |= VM_MMAP_ATOMIC;
+			nvmmap_log("[do_mmap] atomic mode %lx\n", vm_mmap_flags);
+			if (flags & MAP_SHARED) {
+				flags &= ~MAP_SHARED;
+				flags |= MAP_PRIVATE;
+				nvmmap_log("[do_mmap] MAP_SHARED -> MAP_PRIVATE\n");
+			}
+		}
+#endif /* NVMMAP */
 
 		switch (flags & MAP_TYPE) {
 		case MAP_SHARED:
@@ -1403,10 +1420,8 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	}
 
 #ifdef NVMMAP
-	if (flags & MAP_ATOMIC) {
-		vm_mmap_flags = VM_MMAP_ATOMIC;
+	if (vm_mmap_flags != VM_MMAP_NONE)
 		addr = nvmmap_region(file, addr, len, vm_flags, pgoff, vm_mmap_flags);
-	}
 	else
 #endif	/* NVMMAP */
 		addr = mmap_region(file, addr, len, vm_flags, pgoff);
@@ -1726,7 +1741,7 @@ unsigned long nvmmap_region(struct file *file, unsigned long addr,
 	unsigned long charged = 0;
 	struct inode *inode;
 
-	printk(KERN_ERR "[nvmmap_retion] vm_mmap_flags=%lx\n", vm_mmap_flags);
+	nvmmap_log("[nvmmap_region] vm_mmap_flags=%lx\n", vm_mmap_flags);
 
 	/* Check against address space limit. */
 	if (!may_expand_vm(mm, len >> PAGE_SHIFT)) {
@@ -1788,10 +1803,9 @@ unsigned long nvmmap_region(struct file *file, unsigned long addr,
 	vma->vm_page_prot = vm_get_page_prot(vm_flags);
 	vma->vm_pgoff = pgoff;
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
-#ifdef NVMMAP
 	vma->vm_mmap_flags = vm_mmap_flags;
 	INIT_LIST_HEAD(&vma->vm_inode_chain);
-#endif	/* NVMMAP */
+	INIT_LIST_HEAD(&vma->vm_cow_pairs);
 
 	if (file) {
 		if (vm_flags & VM_DENYWRITE) {
@@ -1867,16 +1881,14 @@ out:
 
 	vma_set_page_prot(vma);
 
-#ifdef NVMMAP
 	if (file) {
 		if (vm_mmap_flags & VM_MMAP_ATOMIC) {
 			inode = file_inode(file);
 			list_add(&vma->vm_inode_chain, &inode->i_vma_list);
-			printk(KERN_ERR "[nvmmap_region] ino=%lu, list_add\n",
+			nvmmap_log("[nvmmap_region] ino=%lu, list_add\n",
 					inode->i_ino);
 		}
 	}
-#endif	/* NVMMAP */
 
 	return addr;
 

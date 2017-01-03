@@ -257,6 +257,18 @@ extern asmlinkage void dump_stack(void) __cold;
 	printk(KERN_NOTICE pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_info(fmt, ...) \
 	printk(KERN_INFO pr_fmt(fmt), ##__VA_ARGS__)
+#ifdef NVMMAP_DEBUG
+#define nvmmap_log(fmt, ...) \
+	printk(KERN_INFO pr_fmt(fmt), ##__VA_ARGS__)
+#define nvmmap_log_debug(fmt, ...)				\
+do {								\
+	if (vma->vm_mmap_flags & VM_MMAP_DEBUG)			\
+		printk(KERN_INFO pr_fmt(fmt), ##__VA_ARGS__);	\
+} while(0)
+#else
+#define nvmmap_log(fmt, ...)
+#define nvmmap_log_debug(fmt, ...)
+#endif /* NVMMAP_DEBUG */
 /*
  * Like KERN_CONT, pr_cont() should only be used when continuing
  * a line with no newline ('\n') enclosed. Otherwise it defaults

@@ -14,6 +14,13 @@ int dax_fault(struct vm_area_struct *, struct vm_fault *, get_block_t,
 		dax_iodone_t);
 int __dax_fault(struct vm_area_struct *, struct vm_fault *, get_block_t,
 		dax_iodone_t);
+#ifdef NVMMAP
+void cow_pair_cache_init(void);
+int __dax_fault_cow(struct vm_area_struct *, struct vm_fault *, get_block_t,
+		get_cow_block_t, dax_iodone_t);
+int nvmmap_fsync_range(struct mm_struct *mm, struct vm_area_struct *,
+		unsigned long, unsigned long, int);
+#endif /* NVMMAP */
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 int dax_pmd_fault(struct vm_area_struct *, unsigned long addr, pmd_t *,
 				unsigned int flags, get_block_t, dax_iodone_t);

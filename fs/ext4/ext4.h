@@ -2192,6 +2192,10 @@ extern ext4_fsblk_t ext4_new_meta_blocks(handle_t *handle, struct inode *inode,
 					 unsigned int flags,
 					 unsigned long *count,
 					 int *errp);
+#ifdef NVMMAP
+void ext4_new_cow_block(struct inode *inode,
+		struct buffer_head *bh, int *errp);
+#endif /* NVMMAP */
 extern int ext4_claim_free_clusters(struct ext4_sb_info *sbi,
 				    s64 nclusters, unsigned int flags);
 extern ext4_fsblk_t ext4_count_free_clusters(struct super_block *);

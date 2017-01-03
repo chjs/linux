@@ -111,7 +111,8 @@ extern unsigned int kobjsize(const void *objp);
 #ifdef NVMMAP
 #define VM_MMAP_NONE		0x00000000
 #define VM_MMAP_LOCK		0x00000001
-#define VM_MMAP_ATOMIC		0x00080000
+#define VM_MMAP_DEBUG		0x00080000
+#define VM_MMAP_ATOMIC		0x00100000
 #endif	/* NVMMAP */
 /*
  * vm_flags in vm_area_struct, see mm_types.h.
@@ -224,6 +225,10 @@ extern pgprot_t protection_map[16];
 #define FAULT_FLAG_KILLABLE	0x10	/* The fault task is in SIGKILL killable region */
 #define FAULT_FLAG_TRIED	0x20	/* Second try */
 #define FAULT_FLAG_USER		0x40	/* The fault originated in userspace */
+#ifdef NVMMAP
+#define FAULT_FLAG_COW          0x80    /* NVmmap CoW */
+#define FAULT_FLAG_PRESENT      0x100   /* NVmmap CoW present */
+#endif /* NVMMAP */
 
 /*
  * vm_fault is filled by the the pagefault handler and passed to the vma's
@@ -2092,6 +2097,10 @@ int vm_insert_pfn(struct vm_area_struct *vma, unsigned long addr,
 			unsigned long pfn);
 int vm_insert_mixed(struct vm_area_struct *vma, unsigned long addr,
 			unsigned long pfn);
+#ifdef NVMMAP
+int vm_insert_mixed_mkwrite(struct vm_area_struct *vma, unsigned long addr,
+			unsigned long pfn);
+#endif /* NVMMAP */
 int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long len);
 
 

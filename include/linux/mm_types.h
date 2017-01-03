@@ -288,6 +288,16 @@ struct vm_userfaultfd_ctx {
 struct vm_userfaultfd_ctx {};
 #endif /* CONFIG_USERFAULTFD */
 
+#ifdef NVMMAP
+struct cow_pair {
+	unsigned long cow_addr;
+	pte_t *cow_addr_ptep;
+	sector_t cow_original_block;
+	sector_t cow_new_block;
+	struct list_head cow_list;
+};
+#endif /* NVMMAP */
+
 /*
  * This struct defines a memory VMM memory area. There is one of these
  * per VM-area/task.  A VM area is any part of the process virtual memory
@@ -358,9 +368,10 @@ struct vm_area_struct {
 #ifdef NVMMAP
 	/* If a file is mapped, this vma is added to the list of the inode */
 	struct list_head vm_inode_chain;
-	unsigned long vm_mmap_flags;		/* Flags, see mm.h. */
-	unsigned long vm_orig_flags;		/* Flags, see mm.h. */
-	pgprot_t vm_orig_page_prot;		/* Access permissions of this VMA. */
+	unsigned long vm_mmap_flags;	/* Flags, see mm.h. */
+	unsigned long vm_orig_flags;	/* Flags, see mm.h. */
+	pgprot_t vm_orig_page_prot;	/* Access permissions of this VMA. */
+	struct list_head vm_cow_pairs;	/* Pairs of original and new page. */
 #endif	/* NVMMAP */
 };
 
