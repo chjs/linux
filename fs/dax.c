@@ -29,6 +29,9 @@
 #include <linux/uio.h>
 #include <linux/vmstat.h>
 #ifdef NVMMAP
+#include <linux/mmu_notifier.h>
+#include <linux/mount.h>
+#include <linux/syscalls.h>
 #include <asm/tlb.h>
 static struct kmem_cache *cow_pair_cachep;
 #endif /* NVMMAP */
@@ -79,6 +82,16 @@ static long dax_get_addr(struct buffer_head *bh, void __pmem **addr,
 	sector_t sector = bh->b_blocknr << (blkbits - 9);
 	return bdev_direct_access(bh->b_bdev, sector, addr, &pfn, bh->b_size);
 }
+#ifdef NVMMAP
+static long nvmmap_dax_get_sector_addr(struct super_block *sb, sector_t sector,
+		void __pmem **addr, unsigned long *pfn)
+{
+	long result;
+	result = bdev_direct_access(sb->s_bdev, sector, addr, pfn, sb->s_blocksize);
+	nvmmap_log("[nvmmap_dax_get_sector_addr] sector=%lu, pfn=%lu\n", sector, *pfn);
+	return result;
+}
+#endif /* NVMMAP */
 
 /* the clear_pmem() calls are ordered by a wmb_pmem() in the caller */
 static void dax_new_buf(void __pmem *addr, unsigned size, unsigned first,
@@ -563,6 +576,81 @@ static void insert_journal(struct vm_area_struct *vma, unsigned blkbits,
 	nvmmap_log("[insert_journal] list_add()\n");
 }
 
+static void release_metadata(struct vm_area_struct *vma,
+		char *journal_path,
+		struct inode *inode)
+{
+	int error;
+	mm_segment_t old_fs;
+	char *tmp_path;
+	size_t len;
+	struct cow_pair *pair;
+	struct list_head *entry, *tmp;
+	struct file *file = vma->vm_file;
+
+	/* delete the journal file */
+	len = strlen(journal_path);
+	nvmmap_log("[release_metadata] journal_path=%s, len=%d\n", journal_path, (int)len);
+	tmp_path = (char *)kmalloc(len - 4, GFP_KERNEL);
+	nvmmap_log("[release_metadata] kmalloc is done\n");
+	memcpy(tmp_path, journal_path, len - 4);
+	memcpy(tmp_path + (len - 7), "tmp\0", 4);
+
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+
+	error = sys_rename(journal_path, tmp_path);
+	if (error == 0)
+		nvmmap_log("[release_metadata] RENAME is succeeded: journal_path=%s, tmp_path=%s\n",
+				journal_path, tmp_path);
+	else
+		nvmmap_log("[release_metadata] RENAME is failed\n");
+
+	error = sys_unlink(tmp_path);
+	if (error == 0)
+		nvmmap_log("[release_metadata] UNLINK is succeeded: %s\n", tmp_path);
+	else
+		nvmmap_log("[release_metadata] UNLINK is failed: %s\n", tmp_path);
+
+	set_fs(old_fs);
+
+	kfree(journal_path);
+	kfree(tmp_path);
+
+	/* delete cow pairs */
+	list_for_each_safe(entry, tmp, &vma->vm_cow_pairs)
+	{
+		pair = list_entry(entry, struct cow_pair, cow_list);
+		nvmmap_log("[release_metadata] block number=%lu\n", pair->cow_new_block);
+		file->f_op->free_block(inode, pair->cow_new_block);     // ext4_free_block()
+		nvmmap_log("[release_metadata] 1\n");
+
+		list_del(&pair->cow_list);
+		nvmmap_log("[release_metadata] 2\n");
+		kmem_cache_free(cow_pair_cachep, pair);
+	}
+}
+
+static int nvmmap_remap(struct mm_struct *mm, struct vm_area_struct *vma,
+		unsigned long address, unsigned long pfn)
+{
+	int retval = -1;
+	pte_t *pte, entry;
+	spinlock_t *ptl;
+
+	pte = get_locked_pte(mm, address, &ptl);
+	if (!pte)
+		return retval;
+
+	entry = pte_mkspecial(pfn_pte(pfn, vma->vm_page_prot));
+	entry = pte_wrprotect(entry);
+	set_pte_at(mm, address, pte, entry);
+	update_mmu_cache(vma, address, pte);
+	retval = 0;
+	pte_unmap_unlock(pte, ptl);
+	return retval;
+}
+
 int __dax_fault_cow(struct vm_area_struct *vma, struct vm_fault *vmf,
 			get_block_t get_block, get_cow_block_t get_cow_block,
 			dax_iodone_t complete_unwritten)
@@ -660,6 +748,142 @@ unlock_page:
 	goto out;
 }
 EXPORT_SYMBOL(__dax_fault_cow);
+
+static char *commit_journal(struct vm_area_struct *vma)
+{
+	char oldpath[128];
+	char *newpath;
+	int fd;
+	struct cow_pair *pair;
+	mm_segment_t old_fs;
+	struct file *file;
+	struct inode *inode;
+	struct vfsmount *mnt;
+	struct path path;
+	size_t len;
+int result;
+
+	/* set filename */
+	file = vma->vm_file;
+	inode = file->f_inode;
+	mnt = file->f_path.mnt;
+
+	path.mnt = mnt;
+	path.dentry = mnt->mnt_root;
+
+	snprintf(oldpath, sizeof(oldpath), "%s/%lu-%d.tmp\0",
+			d_path(&path, oldpath, 128),
+			inode->i_ino,
+			(int)atomic_inc_return(&(vma->vm_sync_version)));
+
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	fd = sys_open(oldpath, O_CREAT|O_EXCL|O_RDWR, 0644);
+
+struct cow_pair {
+	unsigned long cow_addr;
+	pte_t *cow_addr_ptep;
+	sector_t cow_original_block;
+	sector_t cow_new_block;
+	struct list_head cow_list;
+};
+	/* write journal */
+	if (fd >= 0) {
+		list_for_each_entry(pair, &vma->vm_cow_pairs, cow_list) {
+			nvmmap_log("[commit_journal] write: addr=%lx, original=%lu, new=%lu\n",
+					pair->cow_addr,
+					pair->cow_original_block,
+					pair->cow_new_block);
+			result = sys_write(fd, (void *)pair, sizeof(struct cow_pair));
+			nvmmap_log("[commit_journal] write result=%d\n", result);
+		}
+		sys_fsync(fd);
+		sys_close(fd);
+	}
+	else
+		nvmmap_log("[commit_journal] journal open error\n");
+
+	len = strlen(oldpath);
+	newpath = kmalloc(len + 4, GFP_KERNEL);
+	memcpy(newpath, oldpath, len);
+	memcpy(newpath + (len - 3), "journal\0", 8);
+	sys_rename(oldpath, newpath);
+	set_fs(old_fs);
+
+	return newpath;
+}
+
+int nvmmap_fsync_range(struct mm_struct *mm, struct vm_area_struct *vma,
+		unsigned long start, unsigned long end, int datasync)
+{
+	char *journal_path;
+	void __pmem *vto, *vfrom;
+	struct cow_pair *pair;
+	unsigned long original_pfn, new_pfn, oldflags;
+	struct inode *inode = vma->vm_file->f_inode;
+
+	/* 0. check the linked list */
+	if (list_empty(&vma->vm_cow_pairs) != 0)
+		return 0;
+
+	/* 1. lock */
+	__mmap_lock(start);
+
+	/* 2. check that new pages are stored on persistent memory */
+
+	/* 3. write to journal */
+	journal_path = commit_journal(vma);
+	nvmmap_log("nvmmap_fsync_range[%d] : journal_path=%s\n", current->pid, journal_path);
+
+	mmu_notifier_invalidate_range_start(mm, start, end);
+
+	/* 4. copy & remapping */
+	list_for_each_entry(pair, &vma->vm_cow_pairs, cow_list)
+	//list_for_each_safe(entry, tmp, &vma->vm_cow_pairs)
+	{
+		//pair = list_entry(entry, struct cow_pair, cow_list);
+
+		/* 4.1 get memory address, pfn */
+		if (nvmmap_dax_get_sector_addr(inode->i_sb, pair->cow_original_block,
+					&vto, &original_pfn) < 0)
+		{
+			nvmmap_log("[nvmmap_fsync_range] fail: get original sector(%lu) addr\n",
+					pair->cow_original_block);
+			return -EIO;
+		}
+		if (nvmmap_dax_get_sector_addr(inode->i_sb, pair->cow_new_block,
+					&vfrom, &new_pfn) < 0)
+		{
+			nvmmap_log("[nvmmap_fsync_range] fail: get new sector(%lu) addr\n",
+					pair->cow_new_block);
+			return -EIO;
+		}
+		nvmmap_log("[nvmmap_fsync_range] original addr=%p pfn=%lu, new addr=%p pfn=%lu\n",
+				vto, original_pfn, vfrom, new_pfn);
+
+		__copy_from_user_inatomic_nocache(vto, vfrom, 4096);
+		/* FIX ME */
+		nvmmap_flush_buffer(vto, 4096, 0);
+
+		/* 4.3 remapping */
+		nvmmap_remap(mm, vma, pair->cow_addr, original_pfn);
+
+		/* 4.4 delete node */
+		//list_del(&pair->cow_list);
+		//kmem_cache_free(cow_pair_cachep, pair);
+	}
+	flush_tlb_all();
+	mmu_notifier_invalidate_range_end(mm, start, end);
+
+	/* 5. release new pages & journal */
+	release_metadata(vma, journal_path, inode);
+
+	/* 6. unlock */
+	__mmap_unlock(start);
+
+	/* 7. return */
+	return 0;
+}
 #endif /* NVMMAP */
 
 /**

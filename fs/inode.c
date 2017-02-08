@@ -159,6 +159,7 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	spin_lock_init(&inode->i_lock);
 #ifdef NVMMAP
 	spin_lock_init(&inode->i_sync_lock);
+	mutex_init(&inode->i_sync_mutex);
 #endif	/* NVMMAP */
 	lockdep_set_class(&inode->i_lock, &sb->s_type->i_lock_key);
 

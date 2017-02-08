@@ -699,6 +699,21 @@ loff_t ext4_llseek(struct file *file, loff_t offset, int whence)
 	return -EINVAL;
 }
 
+#ifdef NVMMAP
+static void ext4_free_block(struct inode *inode, sector_t blk)
+{
+	struct super_block *sb = inode->i_sb;
+	handle_t *handle = ext4_journal_start_sb(sb, EXT4_HT_WRITE_PAGE,
+			EXT4_DATA_TRANS_BLOCKS(sb));
+	sector_t block = blk >> ((inode->i_blkbits) - 9);
+	nvmmap_log("[ext4_free_block] blk=%lu, block=%lu\n", blk, block);
+	ext4_free_blocks(handle, inode, 0, block, 1, 0);
+	nvmmap_log("[ext4_free_block] 1\n");
+	ext4_journal_stop(handle);
+	nvmmap_log("[ext4_free_block] 2\n");
+}
+#endif /* NVMMAP */
+
 const struct file_operations ext4_file_operations = {
 	.llseek		= ext4_llseek,
 	.read_iter	= generic_file_read_iter,
@@ -714,6 +729,9 @@ const struct file_operations ext4_file_operations = {
 	.splice_read	= generic_file_splice_read,
 	.splice_write	= iter_file_splice_write,
 	.fallocate	= ext4_fallocate,
+#ifdef NVMMAP
+	.free_block     = ext4_free_block,
+#endif /* NVMMAP */
 };
 
 const struct inode_operations ext4_file_inode_operations = {

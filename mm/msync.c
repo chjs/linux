@@ -13,6 +13,9 @@
 #include <linux/file.h>
 #include <linux/syscalls.h>
 #include <linux/sched.h>
+#ifdef NVMMAP
+#include <linux/dax.h>
+#endif /* NVMMAP */
 
 /*
  * MS_SYNC syncs the entire file - including mappings.
@@ -56,6 +59,21 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 	 */
 	down_read(&mm->mmap_sem);
 	vma = find_vma(mm, start);
+#ifdef NVMMAP
+	if (vma->vm_mmap_flags & VM_MMAP_ATOMIC) {
+		struct file *file;
+		nvmmap_log("sys_msync[%d] : addr=%lx\n", current->pid, vma->vm_start);
+		file = vma->vm_file;
+		get_file(file);
+		up_read(&mm->mmap_sem);
+
+		/* do msync */
+		error = nvmmap_fsync_range(mm, vma, start, end, 1);
+
+		fput(file);
+		goto out;
+	}
+#endif /* NVMMAP */
 	for (;;) {
 		struct file *file;
 		loff_t fstart, fend;

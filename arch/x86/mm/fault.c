@@ -1227,18 +1227,19 @@ retry:
 	 * we can handle it..
 	 */
 good_area:
-#ifdef NVMMAP
-	if (vma->vm_file) {
-		if (vma->vm_mmap_flags & VM_MMAP_ATOMIC) {
-			inode = vma->vm_file->f_inode;
-			nvmmap_log("[__do_page_fault] spin lock ino=%lu\n",
-					inode->i_ino);
-			spin_lock(&inode->i_sync_lock);
-		}
+#ifdef NVMMAP_TEST
+	if (vma->vm_mmap_flags & VM_MMAP_LOCK) {
+		inode = vma->vm_file->f_inode;
+		nvmmap_log("[__do_page_fault] 1. spin lock ino=%lu, pid=%d\n",
+				inode->i_ino, tsk->pid);
+		//spin_lock(&inode->i_sync_lock);
+		mutex_lock(&inode->i_sync_mutex);
+		nvmmap_log("[__do_page_fault] 2. spin lock ino=%lu, pid=%d\n",
+				inode->i_ino, tsk->pid);
 	}
-#endif /* NVMMAP */
+#endif /* NVMMAP_TEST */
 	if (unlikely(access_error(error_code, vma))) {
-#ifdef NVMMAP
+#ifdef NVMMAP_TEST
 		nvmmap_log("[__do_page_fault] bad area!! error_code=%lu\n",
 				error_code);
 		if (vma->vm_mmap_flags & VM_MMAP_LOCK) {
@@ -1247,7 +1248,7 @@ good_area:
 			vma->vm_page_prot = vma->vm_orig_page_prot;
 			goto locking;
 		}
-#endif /* NVMMAP */
+#endif /* NVMMAP_TEST */
 		bad_area_access_error(regs, error_code, address);
 		return;
 	}
@@ -1261,11 +1262,14 @@ good_area:
 locking:
 	fault = handle_mm_fault(mm, vma, address, flags);
 	major |= fault & VM_FAULT_MAJOR;
-#ifdef NVMMAP
-	if (inode && vma->vm_mmap_flags & VM_MMAP_ATOMIC) {
-		spin_unlock(&inode->i_sync_lock);
-		nvmmap_log("[__do_page_fault] spin unlock ino=%lu\n",
-				inode->i_ino);
+#ifdef NVMMAP_TEST
+	if (inode) {
+		nvmmap_log("[__do_page_fault] 1. spin unlock ino=%lu, pid=%d\n",
+				inode->i_ino, tsk->pid);
+		//spin_unlock(&inode->i_sync_lock);
+		mutex_unlock(&inode->i_sync_mutex);
+		nvmmap_log("[__do_page_fault] 2. spin unlock ino=%lu, pid=%d\n",
+				inode->i_ino, tsk->pid);
 	}
 #endif /* NVMMAP */
 

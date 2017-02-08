@@ -1631,6 +1631,8 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 #ifdef NVMMAP
 	INIT_LIST_HEAD(&vma->vm_inode_chain);
 	vma->vm_mmap_flags = VM_MMAP_NONE;
+	atomic_set(&vma->vm_sync_version, 0);
+	spin_lock_init(&vma->vm_sync_lock);
 #endif	/* NVMMAP */
 
 	if (file) {
@@ -1803,9 +1805,12 @@ unsigned long nvmmap_region(struct file *file, unsigned long addr,
 	vma->vm_page_prot = vm_get_page_prot(vm_flags);
 	vma->vm_pgoff = pgoff;
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
+	
 	vma->vm_mmap_flags = vm_mmap_flags;
 	INIT_LIST_HEAD(&vma->vm_inode_chain);
 	INIT_LIST_HEAD(&vma->vm_cow_pairs);
+	atomic_set(&vma->vm_sync_version, 0);
+	spin_lock_init(&vma->vm_sync_lock);
 
 	if (file) {
 		if (vm_flags & VM_DENYWRITE) {

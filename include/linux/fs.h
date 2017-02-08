@@ -683,6 +683,7 @@ struct inode {
 	void			*i_private; /* fs or device private pointer */
 #ifdef NVMMAP
 	spinlock_t		i_sync_lock;
+	struct mutex		i_sync_mutex;
 	struct list_head 	i_vma_list;
 #endif	/* NVMMAP */
 };
@@ -1637,6 +1638,9 @@ struct file_operations {
 #ifndef CONFIG_MMU
 	unsigned (*mmap_capabilities)(struct file *);
 #endif
+#ifdef NVMMAP
+	void (*free_block)(struct inode *inode, unsigned long long blk);
+#endif /* NVMMAP */
 };
 
 struct inode_operations {

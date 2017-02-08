@@ -372,6 +372,8 @@ struct vm_area_struct {
 	unsigned long vm_orig_flags;	/* Flags, see mm.h. */
 	pgprot_t vm_orig_page_prot;	/* Access permissions of this VMA. */
 	struct list_head vm_cow_pairs;	/* Pairs of original and new page. */
+	atomic_t vm_sync_version;
+	spinlock_t vm_sync_lock;
 #endif	/* NVMMAP */
 };
 
